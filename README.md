@@ -1,17 +1,17 @@
 # ome-tiff-pyramid-tools
 
-Python tools for creating and manipulating OME-TIFF multi-resolution pyramid images. 
+Python tools for creating and manipulating OME-TIFF multi-resolution pyramid images.
 
 ## pyramid_assemble.py
 
-Combine several separate TIFF files into an OME-TIFF legacy pyramid.
+Combine several separate TIFF files into an OME-TIFF legacy pyramid. Will use all
+available CPU cores to speed up the image down-sampling process.
 
 Example:
 ```
 pyramid_assemble.py channel-1.tif channel-2.tif channel-3.tif pyramid.tif --pixel-size 0.65
 ```
-
-### Requirements
+#### Requirements
 
 * Python 3.6 or higher
 * tifffile>=2020.9.28
@@ -31,11 +31,11 @@ Example:
 pyramid_upgrade.py pyramid.tif -n name1 name2 name3
 ```
 
-### Requirements
+#### Requirements
 
 Python 3.7 or higher, or Python 3.6 with the `dataclasses` backport installed.
 
-### Todo
+#### Todo
 
 * Split out TiffSurgeon into its own package with better documentation and
   rationale.
