@@ -326,7 +326,7 @@ class TagSet:
             elif tag.code < t.code:
                 break
         else:
-            i = 0
+            i = len(self.tags)
         n = len(self.tags)
         self.tags[i:n+1] = [tag] + self.tags[i:n]
 
