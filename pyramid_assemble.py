@@ -27,8 +27,8 @@ except ImportError:
 def preduce(coords, img_in, img_out):
     (iy1, ix1), (iy2, ix2) = coords
     (oy1, ox1), (oy2, ox2) = np.array(coords) // 2
-    tile = img_in[iy1:iy2, ix1:ix2]
-    tile = skimage.transform.pyramid_reduce(tile, multichannel=False)
+    tile = skimage.img_as_float32(img_in[iy1:iy2, ix1:ix2])
+    tile = skimage.transform.downscale_local_mean(tile, (2, 2))
     tile = dtype_convert(tile, img_out.dtype)
     img_out[oy1:oy2, ox1:ox2] = tile
 
@@ -132,11 +132,6 @@ def main():
 
     tile_size = 1024
 
-    if hasattr(os, 'sched_getaffinity'):
-        num_workers = len(os.sched_getaffinity(0))
-    else:
-        num_workers = multiprocessing.cpu_count()
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "in_paths", metavar="input.tif", type=pathlib.Path, nargs="+",
@@ -157,6 +152,13 @@ def main():
     if out_path.exists():
         print(f"{out_path} already exists, aborting")
         sys.exit(1)
+
+    if hasattr(os, 'sched_getaffinity'):
+        num_workers = len(os.sched_getaffinity(0))
+    else:
+        num_workers = multiprocessing.cpu_count()
+    print(f"Using {num_workers} worker threads based on detected CPU count.")
+    print()
 
     print("Appending input images")
     for i, path in enumerate(in_paths):
