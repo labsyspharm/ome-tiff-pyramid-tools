@@ -18,7 +18,10 @@ import skimage.transform
 # This API is apparently changing in skimage 1.0 but it's not clear to
 # me what the replacement will be, if any. We'll explicitly import
 # this so it will break loudly if someone tries this with skimage 1.0.
-from skimage.util.dtype import _convert as dtype_convert
+try:
+    from skimage.util.dtype import _convert as dtype_convert
+except ImportError:
+    from skimage.util.dtype import convert as dtype_convert
 
 
 def preduce(coords, img_in, img_out):
