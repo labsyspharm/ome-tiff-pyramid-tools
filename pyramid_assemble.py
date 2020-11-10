@@ -125,6 +125,11 @@ def patch_ometiff_xml(path, xml_bytes):
         f.write(struct.pack('<Q', xml_offset))
 
 
+def error(path, msg):
+    print(f"\nERROR: {path}: {msg}")
+    sys.exit(1)
+
+
 def main():
 
     tile_size = 1024
@@ -152,8 +157,7 @@ def main():
     out_path = args.out_path
     is_mask = args.mask
     if out_path.exists():
-        print(f"{out_path} already exists, aborting")
-        sys.exit(1)
+        error(out_path, "Output file already exists, aborting.")
 
     if hasattr(os, 'sched_getaffinity'):
         num_workers = len(os.sched_getaffinity(0))
@@ -169,21 +173,42 @@ def main():
         if i == 0:
             base_shape = img_in.shape
             dtype = img_in.dtype
+            if dtype == np.uint32:
+                if not is_mask:
+                   error(
+                       path,
+                       "uint32 images are only supported in --mask mode."
+                       " Please contact the authors if you need support for"
+                       " intensity-based uint32 images."
+                    )
+                ome_dtype = 'uint32'
+            elif dtype == np.uint16:
+                ome_dtype = 'uint16'
+            elif dtype == np.uint8:
+                ome_dtype = 'uint8'
+            else:
+                error(
+                    path,
+                    f"Can't handle dtype '{dtype}' yet, please contact the"
+                    f" authors."
+                )
             kwargs = {
                 'description': '!!xml!!',
                 'software': 'Glencoe/Faas pyramid'
             }
         else:
             if img_in.shape != base_shape:
-                print(
-                    f"{path}: expected shape {base_shape}, got {img_in.shape}"
+                error(
+                    path,
+                    f"Expected shape {base_shape} to match first input image,"
+                    f" got {img_in.shape} instead."
                 )
-                sys.exit(1)
             if img_in.dtype != dtype:
-                print(
-                    "{path}: expected dtype {dtype}, got {img_in.dtype}"
+                error(
+                    path,
+                    f"Expected dtype '{dtype}' to match first input image,"
+                    f" got '{img_in.dtype}' instead."
                 )
-                sys.exit(1)
             kwargs = {}
         imsave(out_path, img_in, tile_size, **kwargs)
         del img_in
@@ -238,20 +263,6 @@ def main():
             print()
 
         print()
-
-    if dtype == np.uint32:
-        if is_mask:
-            ome_dtype = 'uint32'
-        else:
-            print("uint32 images are only supported in --mask mode. Please contact the authors if you need support for intensity-based uint32 images.")
-            sys.exit(1)
-    elif dtype == np.uint16:
-        ome_dtype = 'uint16'
-    elif dtype == np.uint8:
-        ome_dtype = 'uint8'
-    else:
-        print("can't handle dtype: %s" % dtype)
-        sys.exit(1)
 
     xml = construct_xml(
         os.path.basename(out_path), shapes, num_channels, ome_dtype, args.pixel_size
