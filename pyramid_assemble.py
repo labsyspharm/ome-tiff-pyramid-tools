@@ -47,16 +47,8 @@ def format_shape(shape):
     return "%dx%d" % (shape[1], shape[0])
 
 
-def construct_xml(filename, shapes, num_channels, dtype, pixel_size=1):
+def construct_xml(filename, shapes, num_channels, ome_dtype, pixel_size=1):
     img_uuid = uuid.uuid4().urn
-    if dtype == np.uint32:
-        ome_dtype = 'uint32'
-    elif dtype == np.uint16:
-        ome_dtype = 'uint16'
-    elif dtype == np.uint8:
-        ome_dtype = 'uint8'
-    else:
-        raise ValueError("can't handle dtype: %s" % dtype)
     ifd = 0
     xml = io.StringIO()
     xml.write(u'<?xml version="1.0" encoding="UTF-8"?>')
@@ -153,7 +145,7 @@ def main():
     )
     parser.add_argument(
         "--mask", action="store_true", default=False,
-        help="will downsample without averaging pixels if true",
+        help="adjust processing for label mask or binary mask images (currently just switch to nearest-neighbor downsampling)",
     )
     args = parser.parse_args()
     in_paths = args.in_paths
@@ -247,8 +239,17 @@ def main():
 
         print()
 
+    if dtype == np.uint32 and is_mask:
+        ome_dtype = 'uint32'
+    elif dtype == np.uint16:
+        ome_dtype = 'uint16'
+    elif dtype == np.uint8:
+        ome_dtype = 'uint8'
+    else:
+        raise ValueError("can't handle dtype: %s" % dtype)
+
     xml = construct_xml(
-        os.path.basename(out_path), shapes, num_channels, dtype, args.pixel_size
+        os.path.basename(out_path), shapes, num_channels, ome_dtype, args.pixel_size
     )
     patch_ometiff_xml(out_path, xml)
 
