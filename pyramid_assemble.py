@@ -32,7 +32,7 @@ def preduce(coords, img_in, img_out, is_mask):
     else:
         tile = skimage.img_as_float32(img_in[iy1:iy2, ix1:ix2])
         tile = skimage.transform.downscale_local_mean(tile, (2, 2))
-    tile = dtype_convert(tile, img_out.dtype)
+        tile = dtype_convert(tile, img_out.dtype)
     img_out[oy1:oy2, ox1:ox2] = tile
 
 
