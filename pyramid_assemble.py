@@ -239,14 +239,19 @@ def main():
 
         print()
 
-    if dtype == np.uint32 and is_mask:
-        ome_dtype = 'uint32'
+    if dtype == np.uint32:
+        if is_mask:
+            ome_dtype = 'uint32'
+        else:
+            print("uint32 images are only supported in --mask mode. Please contact the authors if you need support for intensity-based uint32 images.")
+            sys.exit(1)
     elif dtype == np.uint16:
         ome_dtype = 'uint16'
     elif dtype == np.uint8:
         ome_dtype = 'uint8'
     else:
-        raise ValueError("can't handle dtype: %s" % dtype)
+        print("can't handle dtype: %s" % dtype)
+        sys.exit(1)
 
     xml = construct_xml(
         os.path.basename(out_path), shapes, num_channels, ome_dtype, args.pixel_size
