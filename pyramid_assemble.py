@@ -24,12 +24,15 @@ except ImportError:
     from skimage.util.dtype import convert as dtype_convert
 
 
-def preduce(coords, img_in, img_out):
+def preduce(coords, img_in, img_out, is_mask):
     (iy1, ix1), (iy2, ix2) = coords
     (oy1, ox1), (oy2, ox2) = np.array(coords) // 2
-    tile = skimage.img_as_float32(img_in[iy1:iy2, ix1:ix2])
-    tile = skimage.transform.downscale_local_mean(tile, (2, 2))
-    tile = dtype_convert(tile, img_out.dtype)
+    if is_mask:
+        tile = img_in[iy1:iy2:2, ix1:ix2:2]
+    else:
+        tile = skimage.img_as_float32(img_in[iy1:iy2, ix1:ix2])
+        tile = skimage.transform.downscale_local_mean(tile, (2, 2))
+        tile = dtype_convert(tile, img_out.dtype)
     img_out[oy1:oy2, ox1:ox2] = tile
 
 
@@ -44,14 +47,8 @@ def format_shape(shape):
     return "%dx%d" % (shape[1], shape[0])
 
 
-def construct_xml(filename, shapes, num_channels, dtype, pixel_size=1):
+def construct_xml(filename, shapes, num_channels, ome_dtype, pixel_size=1):
     img_uuid = uuid.uuid4().urn
-    if dtype == np.uint16:
-        ome_dtype = 'uint16'
-    elif dtype == np.uint8:
-        ome_dtype = 'uint8'
-    else:
-        raise ValueError("can't handle dtype: %s" % dtype)
     ifd = 0
     xml = io.StringIO()
     xml.write(u'<?xml version="1.0" encoding="UTF-8"?>')
@@ -128,6 +125,11 @@ def patch_ometiff_xml(path, xml_bytes):
         f.write(struct.pack('<Q', xml_offset))
 
 
+def error(path, msg):
+    print(f"\nERROR: {path}: {msg}")
+    sys.exit(1)
+
+
 def main():
 
     tile_size = 1024
@@ -146,12 +148,16 @@ def main():
         "--pixel-size", metavar="SIZE", type=float, default=1.0,
         help="size in microns; default is 1.0",
     )
+    parser.add_argument(
+        "--mask", action="store_true", default=False,
+        help="adjust processing for label mask or binary mask images (currently just switch to nearest-neighbor downsampling)",
+    )
     args = parser.parse_args()
     in_paths = args.in_paths
     out_path = args.out_path
+    is_mask = args.mask
     if out_path.exists():
-        print(f"{out_path} already exists, aborting")
-        sys.exit(1)
+        error(out_path, "Output file already exists, aborting.")
 
     if hasattr(os, 'sched_getaffinity'):
         num_workers = len(os.sched_getaffinity(0))
@@ -167,21 +173,42 @@ def main():
         if i == 0:
             base_shape = img_in.shape
             dtype = img_in.dtype
+            if dtype == np.uint32:
+                if not is_mask:
+                   error(
+                       path,
+                       "uint32 images are only supported in --mask mode."
+                       " Please contact the authors if you need support for"
+                       " intensity-based uint32 images."
+                    )
+                ome_dtype = 'uint32'
+            elif dtype == np.uint16:
+                ome_dtype = 'uint16'
+            elif dtype == np.uint8:
+                ome_dtype = 'uint8'
+            else:
+                error(
+                    path,
+                    f"Can't handle dtype '{dtype}' yet, please contact the"
+                    f" authors."
+                )
             kwargs = {
                 'description': '!!xml!!',
                 'software': 'Glencoe/Faas pyramid'
             }
         else:
             if img_in.shape != base_shape:
-                print(
-                    f"{path}: expected shape {base_shape}, got {img_in.shape}"
+                error(
+                    path,
+                    f"Expected shape {base_shape} to match first input image,"
+                    f" got {img_in.shape} instead."
                 )
-                sys.exit(1)
             if img_in.dtype != dtype:
-                print(
-                    "{path}: expected dtype {dtype}, got {img_in.dtype}"
+                error(
+                    path,
+                    f"Expected dtype '{dtype}' to match first input image,"
+                    f" got '{img_in.dtype}' instead."
                 )
-                sys.exit(1)
             kwargs = {}
         imsave(out_path, img_in, tile_size, **kwargs)
         del img_in
@@ -224,7 +251,8 @@ def main():
             img_in = zarr.open(tiff.aszarr(key=page), mode="r")
             for i, _ in enumerate(executor.map(
                 preduce, coords,
-                itertools.repeat(img_in), itertools.repeat(img_out)
+                itertools.repeat(img_in), itertools.repeat(img_out),
+                itertools.repeat(is_mask)
             )):
                 percent = int((i + 1) / len(coords) * 100)
                 if i % 20 == 0 or percent == 100:
@@ -237,7 +265,7 @@ def main():
         print()
 
     xml = construct_xml(
-        os.path.basename(out_path), shapes, num_channels, dtype, args.pixel_size
+        os.path.basename(out_path), shapes, num_channels, ome_dtype, args.pixel_size
     )
     patch_ometiff_xml(out_path, xml)
 
