@@ -9,7 +9,7 @@ available CPU cores to speed up the image down-sampling process.
 
 Example:
 ```
-pyramid_assemble.py channel-1.tif channel-2.tif channel-3.tif pyramid.tif --pixel-size 0.65
+pyramid_assemble.py channel-1.tif channel-2.tif channel-3.tif pyramid.ome.tif --pixel-size 0.65
 ```
 #### Requirements
 
@@ -28,7 +28,7 @@ version.
 
 Example:
 ```
-pyramid_upgrade.py pyramid.tif -n name1 name2 name3
+pyramid_upgrade.py pyramid.ome.tif -n name1 name2 name3
 ```
 
 #### Requirements
