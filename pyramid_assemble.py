@@ -141,7 +141,7 @@ def main():
             " dimensions and pixel type.",
     )
     parser.add_argument(
-        "out_path", metavar="output.tif", type=pathlib.Path,
+        "out_path", metavar="output.ome.tif", type=pathlib.Path,
         help="Output filename. Script will exit immediately if file exists.",
     )
     parser.add_argument(
