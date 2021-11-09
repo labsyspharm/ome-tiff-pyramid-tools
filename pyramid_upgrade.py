@@ -9,6 +9,7 @@ import xml.etree.ElementTree
 import collections
 import reprlib
 import dataclasses
+import warnings
 from typing import List, Any
 
 
@@ -266,8 +267,10 @@ class TagSet:
     tags: List[Tag] = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
-        if len(self.codes) != len(set(self.codes)):
-            raise ValueError("Duplicate tag codes are not allowed.")
+        code_counter = collections.Counter(self.codes)
+        dups = [item for item, count in code_counter.items() if count > 1]
+        if dups:
+            warnings.warn(f"Duplicate tags: {dups}")
 
     def __repr__(self):
         ret = type(self).__name__ + "(["
