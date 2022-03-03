@@ -39,7 +39,7 @@ def preduce(coords, img_in, img_out, is_mask):
 def imsave(path, img, tile_size, **kwargs):
     tifffile.imwrite(
         path, img, bigtiff=True, append=True, tile=(tile_size, tile_size),
-        metadata={}, **kwargs
+        ome=False, imagej=False, metadata=None, **kwargs
     )
 
 
