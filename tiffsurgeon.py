@@ -52,13 +52,31 @@ class TiffSurgeon:
             self.endian = ">"
         else:
             raise FormatError(f"Not a TIFF file (signature is '{signature}').")
-        version = self.read("H")
-        if version == 42:
-            raise FormatError("Cannot process classic TIFF, only BigTIFF.")
-        offset_size, reserved, first_ifd_offset = self.read("H H Q")
-        if version != 43 or offset_size != 8 or reserved != 0:
-            raise FormatError("Malformed TIFF, giving up!")
-        self.first_ifd_offset = first_ifd_offset
+        self.version = self.read("H")
+        if self.version == 42:
+            self.offset_size = 4
+            self.offset_format = "I"
+            self.ntags_size = 2
+            self.ntags_format = "H"
+            self.tag_size = 12
+            self.first_ifd_offset_offset = 4
+            self.first_ifd_offset = self.read("I")
+        elif self.version == 43:
+            offset_size, reserved, first_ifd_offset = self.read("H H Q")
+            if offset_size != 8 or reserved != 0:
+                raise FormatError(
+                    f"Malformed BigTIFF: offset_size={offset_size}"
+                    f" reserved={reserved}"
+                )
+            self.offset_size = 8
+            self.offset_format = "Q"
+            self.ntags_size = 8
+            self.ntags_format = "Q"
+            self.tag_size = 20
+            self.first_ifd_offset_offset = 8
+            self.first_ifd_offset = first_ifd_offset
+        else:
+            raise FormatError(f"Unknown TIFF version: {self.version}")
 
     def read(self, fmt, *, file=None):
         if file is None:
@@ -92,6 +110,10 @@ class TiffSurgeon:
         raw = struct.pack(fmt, *values)
         return raw
 
+    @property
+    def tag_format(self):
+        return f"H H {self.offset_format} {self.offset_size}s"
+
     def read_ifds(self):
         ifds = [self.read_ifd(self.first_ifd_offset)]
         while ifds[-1].offset_next:
@@ -100,18 +122,19 @@ class TiffSurgeon:
 
     def read_ifd(self, offset):
         self.file.seek(offset)
-        num_tags = self.read("Q")
-        buf = io.BytesIO(self.file.read(num_tags * 20))
-        offset_next = self.read("Q")
+        num_tags = self.read(self.ntags_format)
+        buf = io.BytesIO(self.file.read(num_tags * self.tag_size))
+        offset_next = self.read(self.offset_format)
+        offset_range = range(offset, self.file.tell())
         try:
             tags = TagSet([self.read_tag(buf) for i in range(num_tags)])
         except FormatError as e:
             raise FormatError(f"IFD at offset {offset}, {e}") from None
-        ifd = Ifd(tags, offset, offset_next)
+        ifd = Ifd(tags, offset, offset_next, offset_range)
         return ifd
 
     def read_tag(self, buf):
-        tag = Tag(*self.read("H H Q 8s", file=buf))
+        tag = Tag(*self.read(self.tag_format, file=buf))
         value, offset_range = self.tag_value(tag)
         tag = dataclasses.replace(tag, value=value, offset_range=offset_range)
         return tag
@@ -126,13 +149,19 @@ class TiffSurgeon:
         new_ifds = []
         for ifd in ifds:
             offset = self.file.tell()
-            self.write("Q", len(ifd.tags))
+            self.write(self.ntags_format, len(ifd.tags))
             for tag in ifd.tags:
                 self.write_tag(tag)
-            offset_next = self.file.tell() + 8 if ifd is not ifds[-1] else 0
-            self.write("Q", offset_next)
+            offset_next = (
+                self.file.tell() + self.offset_size if ifd is not ifds[-1] else 0
+            )
+            self.write(self.offset_format, offset_next)
+            offset_range = range(offset, self.file.tell())
             new_ifd = dataclasses.replace(
-                ifd, offset=offset, offset_next=offset_next
+                ifd,
+                offset=offset,
+                offset_next=offset_next,
+                offset_range=offset_range,
             )
             new_ifds.append(new_ifd)
         return new_ifds
@@ -176,23 +205,23 @@ class TiffSurgeon:
             value = [i for v in value for i in v.as_integer_ratio()]
             count //= 2
         byte_count = struct_count * struct.calcsize(fmt)
-        if byte_count <= 8:
+        if byte_count <= self.offset_size:
             data = self.pack(str(struct_count) + fmt, *value)
-            data += bytes(8 - byte_count)
+            data += bytes(self.offset_size - byte_count)
         else:
             self.file.seek(0, os.SEEK_END)
-            data = self.pack("Q", self.file.tell())
+            data = self.pack(self.offset_format, self.file.tell())
             self.write(str(count) + fmt, *value)
         # TODO Compute and set offset_range.
         tag = Tag(code, datatype, count, data, original_value)
         return tag
 
     def write_first_ifd_offset(self, offset):
-        self.file.seek(8)
-        self.write("Q", offset)
+        self.file.seek(self.first_ifd_offset_offset)
+        self.write(self.offset_format, offset)
 
     def write_tag(self, tag):
-        self.write("H H Q 8s", tag.code, tag.datatype, tag.count, tag.data)
+        self.write(self.tag_format, tag.code, tag.datatype, tag.count, tag.data)
 
     def tag_value(self, tag):
         """Return decoded tag data and the file offset range."""
@@ -201,11 +230,11 @@ class TiffSurgeon:
         if tag.datatype in rational_datatypes:
             count *= 2
         byte_count = count * struct.calcsize(fmt)
-        if byte_count <= 8:
+        if byte_count <= self.offset_size:
             value = self.unpack(str(count) + fmt, tag.data)
             offset_range = range(0, 0)
         else:
-            offset = self.unpack("Q", tag.data)
+            offset = self.unpack(self.offset_format, tag.data)
             self.file.seek(offset)
             value = self.read(str(count) + fmt)
             offset_range = range(offset, offset + byte_count)
@@ -336,14 +365,7 @@ class Ifd:
     tags: TagSet
     offset: int
     offset_next: int
-
-    @property
-    def nbytes(self):
-        return len(self.tags) * 20 + 16
-
-    @property
-    def offset_range(self):
-        return range(self.offset, self.offset + self.nbytes)
+    offset_range: range = dataclasses.field(repr=False)
 
 
 class FormatError(Exception):
