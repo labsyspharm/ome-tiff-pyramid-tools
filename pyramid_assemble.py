@@ -39,7 +39,8 @@ def preduce(coords, img_in, img_out, is_mask):
 def imsave(path, img, tile_size, **kwargs):
     tifffile.imwrite(
         path, img, bigtiff=True, append=True, tile=(tile_size, tile_size),
-        ome=False, imagej=False, metadata=None, **kwargs
+        ome=False, imagej=False, metadata=None, compression="adobe_deflate",
+        predictor=True, **kwargs
     )
 
 
@@ -138,7 +139,7 @@ def main():
     parser.add_argument(
         "in_paths", metavar="input.tif", type=pathlib.Path, nargs="+",
         help="List of TIFF files to combine. All images must have the same"
-            " dimensions and pixel type.",
+        " dimensions and pixel type.",
     )
     parser.add_argument(
         "out_path", metavar="output.ome.tif", type=pathlib.Path,
@@ -146,11 +147,21 @@ def main():
     )
     parser.add_argument(
         "--pixel-size", metavar="SIZE", type=float, default=1.0,
-        help="size in microns; default is 1.0",
+        help="Pixel size in microns; default is 1.0",
+    )
+    parser.add_argument(
+        "--tile-size", metavar="PIXELS", type=int, default=1024,
+        help="Width of pyramid tiles in output file; default is 1024",
     )
     parser.add_argument(
         "--mask", action="store_true", default=False,
-        help="adjust processing for label mask or binary mask images (currently just switch to nearest-neighbor downsampling)",
+        help="Adjust processing for label mask or binary mask images (currently"
+        " just switch to nearest-neighbor downsampling)",
+    )
+    parser.add_argument(
+        "--num-threads", metavar="N", type=int, default=0,
+        help="Number of parallel threads to use for image downsampling; default"
+        " is number of available CPUs"
     )
     args = parser.parse_args()
     in_paths = args.in_paths
@@ -159,12 +170,16 @@ def main():
     if out_path.exists():
         error(out_path, "Output file already exists, aborting.")
 
-    if hasattr(os, 'sched_getaffinity'):
-        num_workers = len(os.sched_getaffinity(0))
-    else:
-        num_workers = multiprocessing.cpu_count()
-    print(f"Using {num_workers} worker threads based on detected CPU count.")
-    print()
+    if args.num_threads == 0:
+        if hasattr(os, 'sched_getaffinity'):
+            args.num_threads = len(os.sched_getaffinity(0))
+        else:
+            args.num_threads = multiprocessing.cpu_count()
+        print(
+            f"Using {args.num_threads} worker threads based on detected CPU"
+            " count."
+        )
+        print()
 
     print("Appending input images")
     for i, path in enumerate(in_paths):
@@ -227,7 +242,7 @@ def main():
         print()
     print()
 
-    executor = concurrent.futures.ThreadPoolExecutor(num_workers)
+    executor = concurrent.futures.ThreadPoolExecutor(args.num_threads)
 
     shape_pairs = zip(shapes[:-1], shapes[1:])
     for level, (shape_in, shape_out) in enumerate(shape_pairs):
