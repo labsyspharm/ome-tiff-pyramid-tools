@@ -1,4 +1,9 @@
 import argparse
+import multiprocessing
+import numpy as np
+import ome_types
+import os
+import skimage.transform
 import sys
 import tifffile
 import tqdm
@@ -11,39 +16,24 @@ def error(path, msg):
     sys.exit(1)
 
 
-def tiles(zimg):
-    th, tw = zimg.chunks[1:]
-    ch, cw = zimg.cdata_shape[1:]
-    for j in range(ch):
-        for i in range(cw):
-            tile = zimg[:, th * j : th * (j + 1), tw * i : tw * (i + 1)]
-            tile = tile.transpose(1, 2, 0)
-            # Must copy() to provide contiguous array for jpeg encoder.
-            yield tile.copy()
-
-
-def progress(zimg, level):
-    ch, cw = zimg.cdata_shape[1:]
-    total = ch * cw
-    t = tqdm.tqdm(tiles(zimg), desc=f"  Level {level}", total=total)
-    # Fix issue with tifffile's peek_iterator causing a missed update.
-    t.update()
-    return iter(t)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Convert OME-TIFF with separate R/G/B channels to true RGB",
-        epilog="Note that any existing pyramid levels are retained, but a"
-        " pyramid will not be added if not already present. JPEG compression"
-        " will be used.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "input", help="Path to input image", metavar="input.ome.tif"
     )
     parser.add_argument(
         "output", help="Path to output image", metavar="output.ome.tif"
+    )
+    parser.add_argument(
+        "--compression", metavar="METHOD", default="jpeg",
+        help="TIFF compression method; default is jpeg (recommended)"
+    )
+    parser.add_argument(
+        "--num-threads", metavar="N", type=int, default=0,
+        help="Number of parallel threads to use for image downsampling; default"
+        " is number of available CPUs"
     )
 
     args = parser.parse_args()
@@ -74,34 +64,116 @@ def main():
             f"Input must have pixel type uint8; found {series.dtype}"
         )
 
+    if args.num_threads == 0:
+        if hasattr(os, 'sched_getaffinity'):
+            args.num_threads = len(os.sched_getaffinity(0))
+        else:
+            args.num_threads = multiprocessing.cpu_count()
+        print(
+            f"Using {args.num_threads} worker threads based on detected CPU"
+            " count."
+        )
+        print()
+
+    image0 = zarr.open(series.aszarr(level=0))
+    metadata = ome_types.from_xml(tiff.ome_metadata, parser="xmlschema")
+
+    base_shape = image0.shape[1:]
+    tile_height, tile_width = image0.chunks[1:]
+    if tile_height != tile_width:
+        error(
+            args.input,
+            f"Input must have square tiles; found {tile_width} x {tile_height}"
+        )
+    tile_size = tile_width
+    del tile_width, tile_height
+    num_levels = np.ceil(np.log2(max(base_shape) / tile_size)) + 1
+    factors = 2 ** np.arange(num_levels)
+    shapes = [
+        tuple(s) for s in
+        (np.ceil(np.array(base_shape) / factors[:, None])).astype(int)
+    ]
+    cshapes = [
+        tuple(s) for s in
+        np.ceil(np.divide(shapes, tile_size)).astype(int)
+    ]
+    print("Pyramid level sizes:")
+    for i, shape in enumerate(shapes):
+        shape_fmt = "%d x %d" % (shape[1], shape[0])
+        print(f"    Level {i + 1}: {shape_fmt}", end="")
+        if i == 0:
+            print(" (original size)", end="")
+        print()
+    print()
+
+    def tiles0():
+        zimg = image0
+        ts = tile_size
+        ch, cw = cshapes[0]
+        for j in range(ch):
+            for i in range(cw):
+                tile = zimg[:, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                tile = tile.transpose(1, 2, 0)
+                # Must copy() to provide contiguous array for jpeg encoder.
+                yield tile.copy()
+
+    def tiles(level):
+        if level == 0:
+           yield from tiles0()
+        tiff_out = tifffile.TiffFile(args.output)
+        zimg = zarr.open(tiff_out.series[0].aszarr(level=level - 1))
+        ts = tile_size * 2
+        ch, cw = cshapes[level]
+        for j in range(ch):
+            for i in range(cw):
+                tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                tile = skimage.transform.downscale_local_mean(tile, (2, 2, 1))
+                tile = np.round(tile).astype(np.uint8)
+                yield tile
+
+    def progress(level):
+        ch, cw = cshapes[level]
+        t = tqdm.tqdm(
+            tiles(level),
+            desc=f"    Level {level + 1}",
+            total=ch * cw,
+            unit="tile",
+        )
+        # Fix issue with tifffile's peek_iterator causing a missed update.
+        t.update()
+        return iter(t)
+
     software = tiff.pages[0].software
+    px = metadata.images[0].pixels.physical_size_x_quantity.m_as("micron")
+    py = metadata.images[0].pixels.physical_size_y_quantity.m_as("micron")
+    print("Writing new OME-TIFF:")
     with tifffile.TiffWriter(args.output, ome=True, bigtiff=True) as writer:
-        pyramid = zarr.open(series.aszarr())
-        if isinstance(pyramid, zarr.Array):
-            pyramid = {0: pyramid}
         writer.write(
-            data=progress(pyramid[0], 1),
-            shape=pyramid[0].shape[1:] + (3,),
-            subifds=len(pyramid) - 1,
+            data=progress(0),
+            shape=shapes[0] + (3,),
+            subifds=num_levels - 1,
             dtype="uint8",
-            tile=pyramid[0].chunks[1:],
-            compression="jpeg",
+            tile=(tile_size, tile_size),
+            compression=args.compression,
             software=software,
             metadata={
                 "UUID": uuid.uuid4().urn,
                 "Creator": software,
                 "Name": series.name,
+                "Pixels": {
+                    "PhysicalSizeX": px, "PhysicalSizeXUnit": "\u00b5m",
+                    "PhysicalSizeY": py, "PhysicalSizeYUnit": "\u00b5m"
+                },
             },
         )
-        for level in range(1, len(pyramid)):
-            zimg = pyramid[level]
+        for level, shape in enumerate(shapes[1:], 1):
             writer.write(
-                data=progress(zimg, level + 1),
-                shape=zimg.shape[1:] + (3,),
+                data=progress(level),
+                shape=shape + (3,),
                 subfiletype=1,
                 dtype="uint8",
-                tile=zimg.chunks[1:],
-                compression="jpeg",
+                tile=(tile_size, tile_size),
+                compression=args.compression,
             )
         print()
 
