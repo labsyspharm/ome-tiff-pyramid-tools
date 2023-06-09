@@ -1,8 +1,11 @@
 import argparse
+import itertools
+import concurrent.futures
 import multiprocessing
 import numpy as np
 import ome_types
 import os
+import pathlib
 import skimage.transform
 import sys
 import tifffile
@@ -21,14 +24,12 @@ def main():
         description="Convert OME-TIFF with separate R/G/B channels to true RGB",
     )
     parser.add_argument(
-        "input", help="Path to input image", metavar="input.ome.tif"
+        "input", help="Path to input image", metavar="input.ome.tif",
+        type=pathlib.Path,
     )
     parser.add_argument(
-        "output", help="Path to output image", metavar="output.ome.tif"
-    )
-    parser.add_argument(
-        "--compression", metavar="METHOD", default="jpeg",
-        help="TIFF compression method; default is jpeg (recommended)"
+        "output", help="Path to output image", metavar="output.ome.tif",
+        type=pathlib.Path,
     )
     parser.add_argument(
         "--num-threads", metavar="N", type=int, default=0,
@@ -64,14 +65,16 @@ def main():
             f"Input must have pixel type uint8; found {series.dtype}"
         )
 
+    if args.output.exists():
+        error(args.output, "Output file exists, remove before continuing")
+
     if args.num_threads == 0:
         if hasattr(os, 'sched_getaffinity'):
             args.num_threads = len(os.sched_getaffinity(0))
         else:
             args.num_threads = multiprocessing.cpu_count()
         print(
-            f"Using {args.num_threads} worker threads based on detected CPU"
-            " count."
+            f"Using {args.num_threads} worker threads based on available CPUs"
         )
         print()
 
@@ -79,14 +82,7 @@ def main():
     metadata = ome_types.from_xml(tiff.ome_metadata, parser="xmlschema")
 
     base_shape = image0.shape[1:]
-    tile_height, tile_width = image0.chunks[1:]
-    if tile_height != tile_width:
-        error(
-            args.input,
-            f"Input must have square tiles; found {tile_width} x {tile_height}"
-        )
-    tile_size = tile_width
-    del tile_width, tile_height
+    tile_size = 1024
     num_levels = np.ceil(np.log2(max(base_shape) / tile_size)) + 1
     factors = 2 ** np.arange(num_levels)
     shapes = [
@@ -106,6 +102,8 @@ def main():
         print()
     print()
 
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.num_threads)
+
     def tiles0():
         zimg = image0
         ts = tile_size
@@ -123,13 +121,17 @@ def main():
         tiff_out = tifffile.TiffFile(args.output)
         zimg = zarr.open(tiff_out.series[0].aszarr(level=level - 1))
         ts = tile_size * 2
+
+        def tile(coords):
+            j, i = coords
+            tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            tile = skimage.transform.downscale_local_mean(tile, (2, 2, 1))
+            tile = np.round(tile).astype(np.uint8)
+            return tile
+
         ch, cw = cshapes[level]
-        for j in range(ch):
-            for i in range(cw):
-                tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
-                tile = skimage.transform.downscale_local_mean(tile, (2, 2, 1))
-                tile = np.round(tile).astype(np.uint8)
-                yield tile
+        coords = itertools.product(range(ch), range(cw))
+        yield from pool.map(tile, coords)
 
     def progress(level):
         ch, cw = cshapes[level]
@@ -154,7 +156,8 @@ def main():
             subifds=num_levels - 1,
             dtype="uint8",
             tile=(tile_size, tile_size),
-            compression=args.compression,
+            compression="jpeg",
+            compressionargs={"level": 90},
             software=software,
             metadata={
                 "UUID": uuid.uuid4().urn,
@@ -173,7 +176,8 @@ def main():
                 subfiletype=1,
                 dtype="uint8",
                 tile=(tile_size, tile_size),
-                compression=args.compression,
+                compression="jpeg",
+                compressionargs={"level": 90},
             )
         print()
 
