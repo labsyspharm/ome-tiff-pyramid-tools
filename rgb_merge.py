@@ -118,7 +118,7 @@ def main():
     def tiles(level):
         if level == 0:
            yield from tiles0()
-        tiff_out = tifffile.TiffFile(args.output)
+        tiff_out = tifffile.TiffFile(args.output, is_ome=False)
         zimg = zarr.open(tiff_out.series[0].aszarr(level=level - 1))
         ts = tile_size * 2
 
@@ -145,11 +145,26 @@ def main():
         t.update()
         return iter(t)
 
+    metadata.uuid = uuid.uuid4().urn
+    # Reconfigure metadata for a single 3-sample channel.
+    mpixels = metadata.images[0].pixels
+    del mpixels.channels[1:]
+    del mpixels.planes[1:]
+    mpixels.channels[0].name = None
+    mpixels.channels[0].samples_per_pixel = 3
+    mpixels.tiff_data_blocks = [ome_types.model.TiffData(plane_count=1)]
+    # Drop the optional PyramidResolution annotation rather than recompute it.
+    metadata.structured_annotations = [
+        a for a in metadata.structured_annotations
+        if a.namespace != "openmicroscopy.org/PyramidResolution"
+    ]
+    ome_xml = metadata.to_xml()
+    # Hack to work around ome_types always writing the default color.
+    ome_xml = ome_xml.replace('Color="-1"', "")
+
     software = tiff.pages[0].software
-    px = metadata.images[0].pixels.physical_size_x_quantity.m_as("micron")
-    py = metadata.images[0].pixels.physical_size_y_quantity.m_as("micron")
     print("Writing new OME-TIFF:")
-    with tifffile.TiffWriter(args.output, ome=True, bigtiff=True) as writer:
+    with tifffile.TiffWriter(args.output, ome=False, bigtiff=True) as writer:
         writer.write(
             data=progress(0),
             shape=shapes[0] + (3,),
@@ -159,15 +174,8 @@ def main():
             compression="jpeg",
             compressionargs={"level": 90},
             software=software,
-            metadata={
-                "UUID": uuid.uuid4().urn,
-                "Creator": software,
-                "Name": series.name,
-                "Pixels": {
-                    "PhysicalSizeX": px, "PhysicalSizeXUnit": "\u00b5m",
-                    "PhysicalSizeY": py, "PhysicalSizeYUnit": "\u00b5m"
-                },
-            },
+            description=ome_xml.encode(),
+            metadata=None,
         )
         for level, shape in enumerate(shapes[1:], 1):
             writer.write(
