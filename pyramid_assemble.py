@@ -52,6 +52,11 @@ def main():
         help="Pixel size in microns. Will be recorded in OME-XML metadata.",
     )
     parser.add_argument(
+        "--channel-names", metavar="CHANNEL", nargs="+",
+        help="Channel names. Will be recorded in OME-XML metadata. Number of"
+        " names must match number of channels in final output file."
+    )
+    parser.add_argument(
         "--tile-size", metavar="PIXELS", type=int, default=1024,
         help="Width of pyramid tiles in output file (must be a multiple of 16);"
         " default is 1024",
@@ -71,7 +76,7 @@ def main():
     out_path = args.out_path
     is_mask = args.mask
     if out_path.exists():
-        error(out_path, "Output file already exists, aborting.")
+        error(out_path, "Output file already exists, remove before continuing.")
 
     if args.num_threads == 0:
         if hasattr(os, 'sched_getaffinity'):
@@ -153,6 +158,13 @@ def main():
     shapes = np.ceil(np.array(base_shape) / factors[:,None]).astype(int)
     cshapes = np.ceil(shapes / args.tile_size).astype(int)
 
+    if args.channel_names and len(args.channel_names) != num_channels:
+        error(
+            out_path,
+            f"Number of channel names ({len(args.channel_names)}) does not"
+            f" match number of channels in final image ({num_channels})."
+        )
+
     print("Pyramid level sizes:")
     for i, shape in enumerate(shapes):
         print(f"    level {i + 1}: {format_shape(shape)}", end="")
@@ -200,6 +212,10 @@ def main():
             "PhysicalSizeXUnit": "µm",
             "PhysicalSizeY": args.pixel_size,
             "PhysicalSizeYUnit": "µm",
+        })
+    if args.channel_names:
+        metadata.update({
+            "Channel": {"Name": args.channel_names},
         })
     print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(args.out_path, ome=True, bigtiff=True) as writer:
