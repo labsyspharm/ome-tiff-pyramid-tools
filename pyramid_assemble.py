@@ -194,7 +194,10 @@ def main():
 
         def tile(coords):
             c, j, i = coords
-            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            if len(zimg.shape) == 2:
+                tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            elif len(zimg.shape) == 3:
+                tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
             tile = skimage.transform.downscale_local_mean(tile, (2, 2))
             tile = np.round(tile).astype(dtype)
             return tile
