@@ -117,13 +117,13 @@ def main():
         if i == 1:
             base_shape = shape
             dtype = img_in.dtype
-            if dtype == np.uint32:
+            if dtype == np.uint32 or dtype == np.int32:
                 if not is_mask:
                    error(
                        path,
-                       "uint32 images are only supported in --mask mode."
+                       "32-bit images are only supported in --mask mode."
                        " Please contact the authors if you need support for"
-                       " intensity-based uint32 images."
+                       " intensity-based 32-bit images."
                     )
             elif dtype == np.uint16 or dtype == np.uint8:
                 pass
@@ -194,9 +194,16 @@ def main():
 
         def tile(coords):
             c, j, i = coords
-            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
-            tile = skimage.transform.downscale_local_mean(tile, (2, 2))
-            tile = np.round(tile).astype(dtype)
+            if zimg.ndim == 2:
+                assert c == 0
+                tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            else:
+                tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            if is_mask:
+                tile = tile[::2, ::2]
+            else:
+                tile = skimage.transform.downscale_local_mean(tile, (2, 2))
+                tile = np.round(tile).astype(dtype)
             return tile
 
         ch, cw = cshapes[level]
