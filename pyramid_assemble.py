@@ -100,23 +100,34 @@ def main():
             path = pathlib.Path(spath[:match.start()])
         else:
             c = None
-        img_in = zarr.open(tifffile.imread(path, key=c, level=0, aszarr=True))
-        if img_in.ndim == 2:
-            shape = img_in.shape
-            imgs = [img_in]
-        elif img_in.ndim == 3:
-            shape = img_in.shape[1:]
-            imgs = [
-                zarr.open(tifffile.imread(path, key=i, level=0, aszarr=True))
-                for i in range(img_in.shape[0])
-            ]
+        tiff = tifffile.TiffFile(path)
+        series = tiff.series[0]
+        shape = (series.sizes["height"], series.sizes["width"])
+        dtype = series.dtype
+        is_rgb = False
+        if series.axes == "YX":
+            channels = 1
+        elif series.axes == "YXS":
+            if series.sizes["sample"] != 3:
+                error(path, "sample count not supported: {series.sizes['sample']}")
+            channels = 1
+            is_rgb = True
+        elif series.axes == "CYX":
+            channels = series.sizes["channel"]
+        elif series.axes == "QYX":
+            channels = series.sizes["other"]
         else:
             error(
-                path, f"{img_in.ndim}-dimensional images are not supported",
+                path, f"image axes combination not supported: {series.axes}",
             )
+        pages = series.levels[0]
+        if c is not None:
+            pages = [pages[c]]
+        imgs = [zarr.open(p.aszarr()) for p in pages]
         if i == 1:
             base_shape = shape
-            dtype = img_in.dtype
+            base_rgb = is_rgb
+            base_dtype = dtype
             if dtype == np.uint32 or dtype == np.int32:
                 if not is_mask:
                    error(
@@ -140,20 +151,27 @@ def main():
                     f"Expected shape {base_shape} to match first input image,"
                     f" got {shape} instead."
                 )
-            if img_in.dtype != dtype:
+            if is_rgb != base_rgb:
                 error(
                     path,
-                    f"Expected dtype '{dtype}' to match first input image,"
-                    f" got '{img_in.dtype}' instead."
+                    f"Can't mix RGB and non-RGB images."
+                )
+            if dtype != base_dtype:
+                error(
+                    path,
+                    f"Expected dtype '{base_dtype}' to match first input image,"
+                    f" got '{dtype}' instead."
                 )
         print(f"    file {i}")
-        print(f"        path: {spath}")
-        print(f"        properties: shape={img_in.shape} dtype={img_in.dtype}")
+        print(f"        path: {path}")
+        print(f"        properties: shape={shape} dtype={dtype}, channels={'RGB' if base_rgb else channels}")
+        if c is not None:
+            print(f"        using single channel: {c}")
         in_imgs.extend(imgs)
     print()
 
     num_channels = len(in_imgs)
-    num_levels = np.ceil(np.log2(max(base_shape) / args.tile_size)) + 1
+    num_levels = max(np.ceil(np.log2(max(base_shape) / args.tile_size)) + 1, 1)
     factors = 2 ** np.arange(num_levels)
     shapes = np.ceil(np.array(base_shape) / factors[:,None]).astype(int)
     cshapes = np.ceil(shapes / args.tile_size).astype(int)
@@ -180,7 +198,7 @@ def main():
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
             print(f"    channel {c}")
-            img = zimg[:]
+            img = zimg[:] # FIXME slice directly from zimg below
             for j in range(ch):
                 for i in range(cw):
                     tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
@@ -189,12 +207,13 @@ def main():
 
     def tiles(level):
         tiff_out = tifffile.TiffFile(args.out_path, is_ome=False)
-        zimg = zarr.open(tiff_out.series[0].aszarr(level=level - 1))
+        series = tiff_out.series[0]
+        zimg = zarr.open(series.aszarr(level=level - 1))
         ts = args.tile_size * 2
 
         def tile(coords):
             c, j, i = coords
-            if zimg.ndim == 2:
+            if series.axes in ("YX", "YXS"):
                 assert c == 0
                 tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
             else:
@@ -202,13 +221,17 @@ def main():
             if is_mask:
                 tile = tile[::2, ::2]
             else:
-                tile = skimage.transform.downscale_local_mean(tile, (2, 2))
-                tile = np.round(tile).astype(dtype)
+                factors = (2, 2)
+                if base_rgb:
+                    factors += (1,)
+                tile = skimage.transform.downscale_local_mean(tile, factors)
+                tile = np.round(tile).astype(base_dtype)
             return tile
 
         ch, cw = cshapes[level]
         coords = itertools.product(range(num_channels), range(ch), range(cw))
-        yield from pool.map(tile, coords)
+        yield from map(tile, coords)
+        # yield from pool.map(tile, coords)
 
     metadata = {
         "UUID": uuid.uuid4().urn,
@@ -224,13 +247,18 @@ def main():
         metadata.update({
             "Channel": {"Name": args.channel_names},
         })
+    photometric = "rgb" if base_rgb else "minisblack"
     print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(args.out_path, ome=True, bigtiff=True) as writer:
+        wshape = (num_channels,) + tuple(shapes[0])
+        if base_rgb:
+            wshape += (3,)
         writer.write(
             data=tiles0(),
-            shape=(num_channels,) + tuple(shapes[0]),
+            shape=wshape,
             subifds=num_levels - 1,
-            dtype=dtype,
+            dtype=base_dtype,
+            photometric=photometric,
             tile=(args.tile_size, args.tile_size),
             compression="adobe_deflate",
             predictor=True,
@@ -241,11 +269,15 @@ def main():
             print(
                 f"Resizing image for level {level + 1}: {format_shape(shape)}"
             )
+            wshape = (num_channels,) + tuple(shape)
+            if base_rgb:
+                wshape += (3,)
             writer.write(
                 data=tiles(level),
-                shape=(num_channels,) + tuple(shape),
+                shape=wshape,
                 subfiletype=1,
-                dtype=dtype,
+                dtype=base_dtype,
+                photometric=photometric,
                 tile=(args.tile_size, args.tile_size),
                 compression="adobe_deflate",
                 predictor=True,
