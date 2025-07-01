@@ -33,6 +33,16 @@ def error(path, msg):
     sys.exit(1)
 
 
+class SampleSplitter:
+
+    def __init__(self, zimg, channel):
+        self.zimg = zimg
+        self.channel = channel
+
+    def __getitem__(self, key):
+        return self.zimg[key + (self.channel,)]
+
+
 def main():
 
     parser = argparse.ArgumentParser()
@@ -60,6 +70,11 @@ def main():
         "--tile-size", metavar="PIXELS", type=int, default=1024,
         help="Width of pyramid tiles in output file (must be a multiple of 16);"
         " default is 1024",
+    )
+    parser.add_argument(
+        "--split-rgb", action="store_true", default=False,
+        help="Split RGB images into three discrete channels in output file"
+        " (useful to allow merging RGB and non-RGB images)"
     )
     parser.add_argument(
         "--mask", action="store_true", default=False,
@@ -92,6 +107,7 @@ def main():
     tifffile.TIFF.MAXIOWORKERS = args.num_threads * 5
 
     in_imgs = []
+    num_channels = 0
     print("Scanning input images")
     for i, path in enumerate(in_paths, 1):
         spath = str(path)
@@ -110,7 +126,7 @@ def main():
         elif series.axes == "YXS":
             if series.sizes["sample"] != 3:
                 error(path, "sample count not supported: {series.sizes['sample']}")
-            channels = 1
+            channels = 3 if args.split_rgb else 1
             is_rgb = True
         elif series.axes == "CYX":
             channels = series.sizes["channel"]
@@ -124,9 +140,12 @@ def main():
         if c is not None:
             pages = [pages[c]]
         imgs = [zarr.open(p.aszarr()) for p in pages]
+        if is_rgb and args.split_rgb:
+            assert len(imgs) == 1
+            imgs = [SampleSplitter(imgs[0], i) for i in range(3)]
         if i == 1:
             base_shape = shape
-            base_rgb = is_rgb
+            base_rgb = is_rgb and not args.split_rgb
             base_dtype = dtype
             if dtype == np.uint32 or dtype == np.int32:
                 if not is_mask:
@@ -151,7 +170,7 @@ def main():
                     f"Expected shape {base_shape} to match first input image,"
                     f" got {shape} instead."
                 )
-            if is_rgb != base_rgb:
+            if is_rgb != base_rgb and not args.split_rgb:
                 error(
                     path,
                     f"Can't mix RGB and non-RGB images."
@@ -164,13 +183,16 @@ def main():
                 )
         print(f"    file {i}")
         print(f"        path: {path}")
-        print(f"        properties: shape={shape} dtype={dtype}, channels={'RGB' if base_rgb else channels}")
+        f_channels = 'RGB' if is_rgb else channels
+        if is_rgb and args.split_rgb:
+            f_channels = '3 (RGB-split)'
+        print(f"        properties: shape={shape} dtype={dtype}, channels={f_channels}")
         if c is not None:
             print(f"        using single channel: {c}")
         in_imgs.extend(imgs)
+        num_channels += channels
     print()
 
-    num_channels = len(in_imgs)
     num_levels = max(np.ceil(np.log2(max(base_shape) / args.tile_size)) + 1, 1)
     factors = 2 ** np.arange(num_levels)
     shapes = np.ceil(np.array(base_shape) / factors[:,None]).astype(int)
@@ -198,12 +220,10 @@ def main():
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
             print(f"    channel {c}")
-            img = zimg[:] # FIXME slice directly from zimg below
             for j in range(ch):
                 for i in range(cw):
-                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
                     yield tile
-            del img
 
     def tiles(level):
         tiff_out = tifffile.TiffFile(args.out_path, is_ome=False)
