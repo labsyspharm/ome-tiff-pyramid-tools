@@ -40,6 +40,7 @@ class SampleSplitter:
         self.channel = channel
 
     def __getitem__(self, key):
+        assert isinstance(key, tuple) and len(key) == 2, "Must index with 2-tuple"
         return self.zimg[key + (self.channel,)]
 
 
@@ -107,6 +108,7 @@ def main():
     tifffile.TIFF.MAXIOWORKERS = args.num_threads * 5
 
     in_imgs = []
+    in_tiled = []
     num_channels = 0
     print("Scanning input images")
     for i, path in enumerate(in_paths, 1):
@@ -140,6 +142,9 @@ def main():
         if c is not None:
             pages = [pages[c]]
         imgs = [zarr.open(p.aszarr()) for p in pages]
+        can_tile = np.all([
+            np.less_equal(img.chunks[:2], args.tile_size) for img in imgs
+        ])
         if is_rgb and args.split_rgb:
             assert len(imgs) == 1
             imgs = [SampleSplitter(imgs[0], i) for i in range(3)]
@@ -189,7 +194,14 @@ def main():
         print(f"        properties: shape={shape} dtype={dtype}, channels={f_channels}")
         if c is not None:
             print(f"        using single channel: {c}")
+        if not can_tile:
+            print(
+                "WARNING: image not tiled or tiling is incompatible with output"
+                f" tile size ({args.tile_size}). Significant extra RAM will be"
+                " required while loading."
+            )
         in_imgs.extend(imgs)
+        in_tiled.extend([can_tile] * len(imgs))
         num_channels += channels
     print()
 
@@ -218,11 +230,13 @@ def main():
     def tiles0():
         ts = args.tile_size
         ch, cw = cshapes[0]
-        for c, zimg in enumerate(in_imgs, 1):
+        for c, (img, can_tile) in enumerate(zip(in_imgs, in_tiled), 1):
             print(f"    channel {c}")
+            if not can_tile:
+                img = img[:, :]
             for j in range(ch):
                 for i in range(cw):
-                    tile = zimg[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
                     yield tile
 
     def tiles(level):
