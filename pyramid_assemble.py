@@ -281,6 +281,8 @@ def main():
             "Channel": {"Name": args.channel_names},
         })
     photometric = "rgb" if base_rgb else "minisblack"
+    compression = 'jpeg' if base_rgb else 'adobe_deflate'
+    predictor = False if base_rgb else True
     print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(args.out_path, ome=True, bigtiff=True) as writer:
         wshape = (num_channels,) + tuple(shapes[0])
@@ -293,8 +295,8 @@ def main():
             dtype=base_dtype,
             photometric=photometric,
             tile=(args.tile_size, args.tile_size),
-            compression="adobe_deflate",
-            predictor=True,
+            compression=compression,
+            predictor=predictor,
             metadata=metadata,
         )
         print()
@@ -312,8 +314,8 @@ def main():
                 dtype=base_dtype,
                 photometric=photometric,
                 tile=(args.tile_size, args.tile_size),
-                compression="adobe_deflate",
-                predictor=True,
+                compression=compression,
+                predictor=predictor,
             )
         print()
 
