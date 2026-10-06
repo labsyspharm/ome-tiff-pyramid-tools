@@ -33,15 +33,39 @@ def error(path, msg):
     sys.exit(1)
 
 
-class SampleSplitter:
+class ZarrTransposer:
+    "Wrap a zarr array with axes SYX to behave like YXS"
 
-    def __init__(self, zimg, channel):
+    def __init__(self, zimg):
+        assert zimg.ndim == 3 and zimg.shape[0] == 3, "Shape must be (3,Y,X)"
         self.zimg = zimg
-        self.channel = channel
+
+    @property
+    def chunks(self):
+        c = self.zimg.chunks
+        return (c[1], c[2], c[0])
+
+    def __getitem__(self, key):
+        if len(key) == 2:
+            return self.zimg[:, key[0], key[1]].transpose(1, 2, 0)
+        elif len(key) == 3:
+            if not isinstance(key[2], int):
+                raise ValueError("Third dimension of selection must be a single integer if present")
+            return self.zimg[key[2], key[0], key[1]]
+        else:
+            raise ValueError("Must index with 2 or 3 dimensions")
+
+
+class ZarrSampleSplitter:
+    "Wrap a zarr array with axes YXS to produce a view of a single sample plane"
+
+    def __init__(self, zimg, sample):
+        self.zimg = zimg
+        self.sample = sample
 
     def __getitem__(self, key):
         assert isinstance(key, tuple) and len(key) == 2, "Must index with 2-tuple"
-        return self.zimg[key + (self.channel,)]
+        return self.zimg[key + (self.sample,)]
 
 
 def main():
@@ -123,13 +147,15 @@ def main():
         shape = (series.sizes["height"], series.sizes["width"])
         dtype = series.dtype
         is_rgb = False
+        transpose = False
         if series.axes == "YX":
             channels = 1
-        elif series.axes == "YXS":
+        elif series.axes in ("YXS", "SYX"):
             if series.sizes["sample"] != 3:
                 error(path, "sample count not supported: {series.sizes['sample']}")
             channels = 3 if args.split_rgb else 1
             is_rgb = True
+            transpose = series.axes == "SYX"
         elif series.axes == "CYX":
             channels = series.sizes["channel"]
         elif series.axes == "QYX":
@@ -142,12 +168,14 @@ def main():
         if c is not None:
             pages = [pages[c]]
         imgs = [zarr.open(p.aszarr()) for p in pages]
+        if transpose:
+            imgs = [ZarrTransposer(img) for img in imgs]
         can_tile = np.all([
             np.less_equal(img.chunks[:2], args.tile_size) for img in imgs
         ])
         if is_rgb and args.split_rgb:
             assert len(imgs) == 1
-            imgs = [SampleSplitter(imgs[0], i) for i in range(3)]
+            imgs = [ZarrSampleSplitter(imgs[0], i) for i in range(3)]
         if i == 1:
             base_shape = shape
             base_rgb = is_rgb and not args.split_rgb
@@ -188,10 +216,11 @@ def main():
                 )
         print(f"    file {i}")
         print(f"        path: {path}")
+        axes = series.axes
         f_channels = 'RGB' if is_rgb else channels
         if is_rgb and args.split_rgb:
             f_channels = '3 (RGB-split)'
-        print(f"        properties: shape={shape} dtype={dtype}, channels={f_channels}")
+        print(f"        properties: shape={shape} axes={axes} dtype={dtype} channels={f_channels}")
         if c is not None:
             print(f"        using single channel: {c}")
         if not can_tile:
