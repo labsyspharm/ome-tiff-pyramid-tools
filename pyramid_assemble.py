@@ -1,3 +1,13 @@
+# /// script
+# dependencies = [
+#     "imagecodecs",
+#     "numpy",
+#     "scikit-image",
+#     "tifffile>=2026.5.2",
+#     "zarr",
+# ]
+# ///
+
 from __future__ import print_function, division
 import warnings
 import sys
@@ -144,22 +154,22 @@ def main():
             c = None
         tiff = tifffile.TiffFile(path)
         series = tiff.series[0]
-        shape = (series.sizes["height"], series.sizes["width"])
+        shape = (series.sizes["Y"], series.sizes["X"])
         dtype = series.dtype
         is_rgb = False
         transpose = False
         if series.axes == "YX":
             channels = 1
         elif series.axes in ("YXS", "SYX"):
-            if series.sizes["sample"] != 3:
-                error(path, "sample count not supported: {series.sizes['sample']}")
+            if series.sizes["S"] != 3:
+                error(path, "sample count not supported: {series.sizes['S']}")
             channels = 3 if args.split_rgb else 1
             is_rgb = True
             transpose = series.axes == "SYX"
         elif series.axes == "CYX":
-            channels = series.sizes["channel"]
+            channels = series.sizes["C"]
         elif series.axes == "QYX":
-            channels = series.sizes["other"]
+            channels = series.sizes["Q"]
         else:
             error(
                 path, f"image axes combination not supported: {series.axes}",
