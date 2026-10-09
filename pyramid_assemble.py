@@ -170,9 +170,12 @@ def main():
         imgs = [zarr.open(p.aszarr()) for p in pages]
         if transpose:
             imgs = [ZarrTransposer(img) for img in imgs]
-        can_tile = np.all([
-            np.less_equal(img.chunks[:2], args.tile_size) for img in imgs
+        tile_size_ratios = np.ravel([
+            np.divide(args.tile_size, img.chunks[:2]) for img in imgs
         ])
+        can_tile = np.all(tile_size_ratios >= 1)
+        can_tile_efficiently = can_tile and np.all(np.modf(tile_size_ratios)[0] == 0)
+
         if is_rgb and args.split_rgb:
             assert len(imgs) == 1
             imgs = [ZarrSampleSplitter(imgs[0], i) for i in range(3)]
@@ -228,6 +231,12 @@ def main():
                 "WARNING: image not tiled or tiling is incompatible with output"
                 f" tile size ({args.tile_size}). Significant extra RAM will be"
                 " required while loading."
+            )
+        elif not can_tile_efficiently:
+            print(
+                f"WARNING: image tile size {imgs[0].chunks[:2]} doesn't divide"
+                f" evenly into output tile size ({args.tile_size}). Consider a"
+                " different output tile size to speed up the conversion."
             )
         in_imgs.extend(imgs)
         in_tiled.extend([can_tile] * len(imgs))
