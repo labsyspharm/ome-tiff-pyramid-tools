@@ -13,8 +13,8 @@ pyramid_assemble.py channel-1.tif channel-2.tif channel-3.tif pyramid.ome.tif --
 ```
 #### Requirements
 
-* Python 3.6 or higher
-* tifffile>=2020.9.28
+* Python >= 3.12
+* tifffile >= 2026.5.2
 * scikit-image
 * zarr
 
