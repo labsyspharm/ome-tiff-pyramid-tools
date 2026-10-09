@@ -32,7 +32,10 @@ try:
     from skimage.util.dtype import _convert as dtype_convert
 except ImportError:
     from skimage.util.dtype import convert as dtype_convert
-
+try:
+    import tqdm
+except ImportError:
+    tqdm = None
 
 def format_shape(shape):
     return "%d x %d" % (shape[1], shape[0])
@@ -282,16 +285,24 @@ def main():
             print(f"    channel {c}")
             if not can_tile:
                 img = img[:, :]
+            progress = tqdm.tqdm(total=ch * cw, desc='    ') if can_tile and tqdm else None
             for j in range(ch):
                 for i in range(cw):
                     tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    if progress is not None:
+                        progress.update()
                     yield tile
+            if progress is not None:
+                progress.close()
 
     def tiles(level):
         tiff_out = tifffile.TiffFile(args.out_path, is_ome=False)
         series = tiff_out.series[0]
         zimg = zarr.open(series.aszarr(level=level - 1))
         ts = args.tile_size * 2
+        ch, cw = cshapes[level]
+        coords = itertools.product(range(num_channels), range(ch), range(cw))
+        progress = tqdm.tqdm(total=num_channels * ch * cw, desc='    ') if tqdm else None
 
         def tile(coords):
             c, j, i = coords
@@ -308,10 +319,10 @@ def main():
                     factors += (1,)
                 tile = skimage.transform.downscale_local_mean(tile, factors)
                 tile = np.round(tile).astype(base_dtype)
+            if progress is not None:
+                progress.update()
             return tile
 
-        ch, cw = cshapes[level]
-        coords = itertools.product(range(num_channels), range(ch), range(cw))
         yield from pool.map(tile, coords)
 
     metadata = {
